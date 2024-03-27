@@ -78,15 +78,9 @@ int main(){
     std::vector<addre> myVector;
 
     // Traverse the set and push each element into the vector 
-    myVector.reserve(addr_pool.size() * 2);
+    myVector.reserve(addr_pool.size());
     for (const auto& element : addr_pool) {
         myVector.push_back(element);
-    }
-    while (myVector.size() < addr_pool.size() * 2)   // Add some accesses that will miss, because we are reading the write log for every access, so the hit ratio is not high
-    { 
-        random8bit = (rand() % 256) % 64;
-        random32bit = rand() | (rand() << 16);
-        myVector.push_back({random32bit, (uint32_t)random8bit});
     }
     
 
@@ -98,6 +92,20 @@ int main(){
     std::shuffle(myVector.begin(), myVector.end(), gen);
 
 
+    //We don't want to count the DRAM loading time of every addr when testing, so better keep a small vector of "hit" addresses so that it can be pre-load into L1 cache
+    addre hit_array[8192];
+    for (size_t i = 0; i < 8192; i++)
+    {
+        hit_array[i] = myVector[i];
+    }
+    
+    //Pre-load it again to L1 cache, make sure it's in the cache
+    uint32_t _xor = 1;
+    for (size_t i = 0; i < 8192; i++)
+    {
+        _xor = hit_array[i].page_index ^ _xor;
+    }
+
     int32_t sum; // Prevent the O3 compiler to optimize out the indexing process
 
     // Start the clock
@@ -105,8 +113,22 @@ int main(){
 
     for (size_t i = 0; i < 100000000; i++)
     {
-        uint32_t i_page = myVector[i%myVector.size()].page_index;   // sequential access, I think the prefetcher can work well to bring the myVector into CPU cache
-        uint8_t i_cacheline = (uint8_t)(myVector[i%myVector.size()].cacheline_index);
+        uint32_t i_page; 
+        uint8_t i_cacheline;
+        uint32_t xor_value; //For random miss address generation
+        if (i%16 < 6)  //Generate Several hits
+        {
+            addre addr = hit_array[(i+7*i%16)%8192];
+            i_page = addr.page_index;   // sequential access, I think the prefetcher can work well to bring the myVector into CPU cache
+            i_cacheline = (uint8_t)(addr.cacheline_index);
+        }
+        else    // Generate some miss addresses
+        {
+            i_page = (i * 37) + xor_value;
+            i_cacheline = (uint8_t)(((i * 23) ^ xor_value) % 64);
+            xor_value = i_page ^ xor_value;
+        }
+        
         std::unordered_map<uint32_t, std::unordered_map<uint8_t, uint32_t>*>::iterator it;
         if ((it=the_1st_level_log_table.find(i_page))!=the_1st_level_log_table.end())
         {
@@ -127,7 +149,8 @@ int main(){
 
     // Output the duration in seconds
     std::cout << "Elapsed time for 100000000 times write log lookup: " << duration.count() << " seconds." << std::endl;
-    std::cout << "Sum result " << sum << ", lol." << std::endl;
+    std::cout << "Garbage result 1: " << sum << ", lol." << std::endl;
+    std::cout << "Garbage result 2: " << _xor << ", lol." << std::endl;
 
     for (auto& element : array_of_2nd_level_log_tables) //Free allocated memory
     {
@@ -154,14 +177,22 @@ int main(){
         addr_set.push_back(random32bit);
     }
 
-    for (size_t i = 0; i < 262144; i++)
-    {
-        random32bit = rand() | (rand() << 16);
-        addr_set.push_back(random32bit);
-    }
-
     // Shuffle the vector
     std::shuffle(addr_set.begin(), addr_set.end(), gen);
+
+    //We don't want to count the DRAM loading time of every addr when testing, so better keep a small vector of "hit" addresses so that it can be pre-load into L1 cache
+    uint32_t hit_array2[8192];
+    for (size_t i = 0; i < 8192; i++)
+    {
+        hit_array2[i] = addr_set[i];
+    }
+    
+    //Pre-load it again to L1 cache, make sure it's in the cache
+    _xor = 1;
+    for (size_t i = 0; i < 8192; i++)
+    {
+        _xor = hit_array2[i] ^ _xor;
+    }
 
 
     //Test
@@ -170,7 +201,18 @@ int main(){
 
     for (size_t i = 0; i < 100000000; i++)
     {
-        uint32_t i_page = addr_set[i%addr_set.size()];   // sequential access, I think the prefetcher can work well to bring the myVector into CPU cache
+        uint32_t i_page;  
+        uint32_t xor_value;
+
+        if (i%16 <8) //hits
+        {
+            i_page = hit_array2[(i+7*i%16)%8192];
+        } 
+        else   // misses
+        {
+            i_page = (i * 37) + xor_value;
+            xor_value = i_page ^ xor_value;
+        }
 
         if (ssd_cache.find(i_page)!=ssd_cache.end())
         {
