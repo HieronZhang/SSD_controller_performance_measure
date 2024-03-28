@@ -33,7 +33,7 @@ struct addre
 
 
 
-int main(){
+void measure_log_indexing_time(uint64_t size_mb){
 
     /*                                         Part 1: Wrote Log Indexing Time                                      */
 
@@ -43,7 +43,7 @@ int main(){
     std::set<addre> addr_pool;
 
     //Initialization of array_of_2nd_log_tables, suppose a 128MB log
-    int64_t maxN_log = 128 * 1024 * 1024 / 64;
+    uint64_t maxN_log = size_mb * 1024 * 1024 / 64;
 
     uint8_t random8bit; //Cacheline index in one page
     uint32_t random32bit; //Page index as a 32-bit value
@@ -93,15 +93,15 @@ int main(){
 
 
     //We don't want to count the DRAM loading time of every addr when testing, so better keep a small vector of "hit" addresses so that it can be pre-load into L1 cache
-    addre hit_array[8192];
-    for (size_t i = 0; i < 8192; i++)
+    addre hit_array[4096];
+    for (size_t i = 0; i < 4096; i++)
     {
         hit_array[i] = myVector[i];
     }
     
     //Pre-load it again to L1 cache, make sure it's in the cache
-    uint32_t _xor = 1;
-    for (size_t i = 0; i < 8192; i++)
+    uint32_t _xor = 1;  // Prevent the for loop from being optimized out by O3 compiler
+    for (size_t i = 0; i < 4096; i++)
     {
         _xor = hit_array[i].page_index ^ _xor;
     }
@@ -118,8 +118,8 @@ int main(){
         uint32_t xor_value; //For random miss address generation
         if (i%16 < 6)  //Generate Several hits
         {
-            addre addr = hit_array[(i+7*i%16)%8192];
-            i_page = addr.page_index;   // sequential access, I think the prefetcher can work well to bring the myVector into CPU cache
+            addre addr = hit_array[(i+7*i%16)%4096];
+            i_page = addr.page_index;   
             i_cacheline = (uint8_t)(addr.cacheline_index);
         }
         else    // Generate some miss addresses
@@ -148,7 +148,7 @@ int main(){
     std::chrono::duration<double> duration = end - start;
 
     // Output the duration in seconds
-    std::cout << "Elapsed time for 100000000 times write log lookup: " << duration.count() << " seconds." << std::endl;
+    std::cout << "Elapsed time for 100000000 times "<<size_mb<<" MB size "<<"write log lookup: " << duration.count() << " seconds." << std::endl;
     std::cout << "Garbage result 1: " << sum << ", lol." << std::endl;
     std::cout << "Garbage result 2: " << _xor << ", lol." << std::endl;
 
@@ -156,48 +156,57 @@ int main(){
     {
         delete element;
     }
-    
+}
 
 
-
-
+void measure_ssd_cache_indexing(uint64_t size_mb){
 
     /*                                         Part 2: SSD Cache Indexing Time                                      */
+
+
+    uint32_t random32bit; //Page index as a 32-bit value
 
     //Assume we have a 1GB SSD DRAM Cache
     std::unordered_map<uint32_t, uint32_t> ssd_cache;
     vector<uint32_t> addr_set;
-    addr_set.reserve(262144*2);
+    uint64_t num_entries = size_mb * 1024 * 1024 / 4096;
+    addr_set.reserve(num_entries);
 
     //Fill data
-    for (size_t i = 0; i < 262144; i++)
+    for (size_t i = 0; i < num_entries; i++)
     {
         random32bit = rand() | (rand() << 16);
         ssd_cache[random32bit] = i;
         addr_set.push_back(random32bit);
     }
 
+    // Obtain a random seed
+    std::random_device rd;
+    std::mt19937 gen(rd());
+
     // Shuffle the vector
     std::shuffle(addr_set.begin(), addr_set.end(), gen);
 
     //We don't want to count the DRAM loading time of every addr when testing, so better keep a small vector of "hit" addresses so that it can be pre-load into L1 cache
-    uint32_t hit_array2[8192];
-    for (size_t i = 0; i < 8192; i++)
+    uint32_t hit_array2[4096];
+    for (size_t i = 0; i < 4096; i++)
     {
         hit_array2[i] = addr_set[i];
     }
     
+
     //Pre-load it again to L1 cache, make sure it's in the cache
-    _xor = 1;
-    for (size_t i = 0; i < 8192; i++)
+    uint32_t _xor = 1;
+    for (size_t i = 0; i < 4096; i++)
     {
         _xor = hit_array2[i] ^ _xor;
     }
 
+    int32_t sum; // Prevent the O3 compiler to optimize out the indexing process
 
     //Test
      // Start the clock
-    start = std::chrono::high_resolution_clock::now();
+    auto start = std::chrono::high_resolution_clock::now();
 
     for (size_t i = 0; i < 100000000; i++)
     {
@@ -206,7 +215,7 @@ int main(){
 
         if (i%16 <8) //hits
         {
-            i_page = hit_array2[(i+7*i%16)%8192];
+            i_page = hit_array2[(i+7*i%16)%4096];
         } 
         else   // misses
         {
@@ -221,18 +230,31 @@ int main(){
     }
 
     // End the clock
-    end = std::chrono::high_resolution_clock::now();
+    auto end = std::chrono::high_resolution_clock::now();
 
     // Calculate the duration
-    duration = end - start;
+    std::chrono::duration<double> duration = end - start;
 
     // Output the duration in seconds
-    std::cout << "Elapsed time for 100000000 times cache lookup: " << duration.count() << " seconds." << std::endl;
-    std::cout << "Sum result " << sum << ", lol." << std::endl;
+    std::cout << "Elapsed time for 100000000 times " <<size_mb<<" MB size "<<"cache lookup: " << duration.count() << " seconds." << std::endl;
+    std::cout << "Garbage result 1: " << sum << ", lol." << std::endl;
+    std::cout << "Garbage result 2: " << _xor << ", lol." << std::endl;
+}
 
-    
-    
 
+
+int main(){
+
+    for (uint64_t i = 16; i < 2049; i = i*2)
+    {
+        measure_log_indexing_time(i);
+    }
+
+    for (uint64_t i = 64; i < 8193; i = i*2)
+    {
+        measure_ssd_cache_indexing(i);
+    }
+    
     
     return 0;
 }
